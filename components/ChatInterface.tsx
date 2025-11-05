@@ -108,7 +108,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ category, onDiagnose, isL
             <input ref={fileInputRef} id="file-upload" name="file-upload" type="file" className="sr-only" onChange={handleImageChange} accept="image/*"/>
         </div>
         
-        {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
+        {error && <p className="text-red-500 text-sm mb-4 bg-red-100 dark:bg-red-900/20 p-3 rounded-md">{error}</p>}
 
         <button
           type="submit"

@@ -1,62 +1,138 @@
-
 import React, { useState, useCallback } from 'react';
-import { Category, JobTicket as JobTicketType } from './types';
+import { Category, AiDiagnosis, JobAssignment, Technician, UserLocation } from './types';
 import Header from './components/Header';
 import CategorySelector from './components/CategorySelector';
 import ChatInterface from './components/ChatInterface';
 import JobTicket from './components/JobTicket';
+import LocationInput from './components/LocationInput';
 import { generateJobTicket } from './services/geminiService';
+import { TECHNICIANS } from './data/technicians';
 
-type AppStep = 'CATEGORY_SELECTION' | 'PROBLEM_INPUT' | 'SHOWING_RESULT';
+type AppStep = 'LOCATION_INPUT' | 'CATEGORY_SELECTION' | 'PROBLEM_INPUT' | 'SHOWING_RESULT';
 
 const App: React.FC = () => {
-  const [step, setStep] = useState<AppStep>('CATEGORY_SELECTION');
+  const [step, setStep] = useState<AppStep>('LOCATION_INPUT');
+  const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
-  const [jobTicket, setJobTicket] = useState<JobTicketType | null>(null);
+  const [jobAssignment, setJobAssignment] = useState<JobAssignment | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
+  const handleLocationSet = (location: UserLocation) => {
+    setUserLocation(location);
+    setStep('CATEGORY_SELECTION');
+  };
+  
   const handleCategorySelect = (category: Category) => {
     setSelectedCategory(category);
     setStep('PROBLEM_INPUT');
   };
 
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371; // Radius of the earth in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c; // Distance in km
+  }
+
   const handleDiagnose = useCallback(async (description: string, image: { data: string; mimeType: string } | null) => {
-    if (!selectedCategory) return;
+    if (!selectedCategory || !userLocation) return;
     setIsLoading(true);
     setError(null);
-    setJobTicket(null);
+    setJobAssignment(null);
 
     try {
-      const ticket = await generateJobTicket(selectedCategory.name, description, image);
-      setJobTicket(ticket);
+      const diagnosis: AiDiagnosis = await generateJobTicket(selectedCategory.name, description, image);
+      
+      const suitableTechnicians = TECHNICIANS.filter(tech => tech.skillsets.includes(selectedCategory.name));
+
+      if (suitableTechnicians.length === 0) {
+        setError(`Apologies, we couldn't find any ${selectedCategory.name} technicians in our network.`);
+        setIsLoading(false);
+        return;
+      }
+
+      let bestTechnician: Technician | null = null;
+      let minDistance = Infinity;
+
+      suitableTechnicians.forEach(tech => {
+        const distance = calculateDistance(userLocation.lat, userLocation.lon, tech.location.lat, tech.location.lon);
+        if (distance < minDistance) {
+          minDistance = distance;
+          bestTechnician = tech;
+        }
+      });
+      
+      if (!bestTechnician) {
+         // This should not happen if suitableTechnicians is not empty, but as a fallback
+        bestTechnician = suitableTechnicians[0];
+      }
+
+      const partsCost = diagnosis.requiredParts.reduce((sum, part) => sum + part.estimatedPrice, 0);
+      const laborCost = bestTechnician.hourlyRate * diagnosis.estimatedLaborHours;
+      const totalCost = partsCost + laborCost;
+      // 10 mins prep + travel time at 30km/h average speed
+      const estimatedArrivalTimeMinutes = Math.round(10 + (minDistance / 30) * 60);
+
+      const newJobAssignment: JobAssignment = {
+        diagnosis,
+        assignedTechnician: bestTechnician,
+        estimatedCost: {
+          parts: partsCost,
+          labor: laborCost,
+          total: totalCost,
+        },
+        estimatedArrivalTimeMinutes,
+      };
+
+      setJobAssignment(newJobAssignment);
       setStep('SHOWING_RESULT');
     } catch (e) {
       console.error(e);
-      setError('Failed to generate the job ticket. Please try again.');
+      setError('The AI failed to generate a diagnosis. Please try again with a more detailed description.');
     } finally {
       setIsLoading(false);
     }
-  }, [selectedCategory]);
+  }, [selectedCategory, userLocation]);
 
   const handleStartOver = () => {
-    setStep('CATEGORY_SELECTION');
+    setStep('LOCATION_INPUT');
     setSelectedCategory(null);
-    setJobTicket(null);
+    setJobAssignment(null);
+    setUserLocation(null);
     setError(null);
     setIsLoading(false);
   };
+  
+  const handleBack = () => {
+    setError(null);
+    if (step === 'SHOWING_RESULT') {
+        setStep('PROBLEM_INPUT');
+    } else if (step === 'PROBLEM_INPUT') {
+        setStep('CATEGORY_SELECTION');
+    } else if (step === 'CATEGORY_SELECTION') {
+        setStep('LOCATION_INPUT');
+    }
+  };
+
 
   const renderStep = () => {
     switch (step) {
+      case 'LOCATION_INPUT':
+        return <LocationInput onLocationSet={handleLocationSet} />;
       case 'CATEGORY_SELECTION':
-        return <CategorySelector onCategorySelect={handleCategorySelect} />;
+        return <CategorySelector onCategorySelect={handleCategorySelect} onBack={handleBack} />;
       case 'PROBLEM_INPUT':
-        return selectedCategory && <ChatInterface category={selectedCategory} onDiagnose={handleDiagnose} isLoading={isLoading} error={error} onBack={handleStartOver} />;
+        return selectedCategory && <ChatInterface category={selectedCategory} onDiagnose={handleDiagnose} isLoading={isLoading} error={error} onBack={handleBack} />;
       case 'SHOWING_RESULT':
-        return jobTicket && <JobTicket ticket={jobTicket} onStartOver={handleStartOver} />;
+        return jobAssignment && <JobTicket assignment={jobAssignment} onStartOver={handleStartOver} />;
       default:
-        return <CategorySelector onCategorySelect={handleCategorySelect} />;
+        return <LocationInput onLocationSet={handleLocationSet} />;
     }
   };
 

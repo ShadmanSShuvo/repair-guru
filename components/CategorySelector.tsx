@@ -7,14 +7,15 @@ import SparklesIcon from './icons/SparklesIcon';
 
 interface CategorySelectorProps {
   onCategorySelect: (category: Category) => void;
+  onBack: () => void;
 }
 
-const CategorySelector: React.FC<CategorySelectorProps> = ({ onCategorySelect }) => {
+const CategorySelector: React.FC<CategorySelectorProps> = ({ onCategorySelect, onBack }) => {
   return (
     <div className="text-center animate-fade-in">
       <div className="flex justify-center items-center gap-2 mb-4">
         <SparklesIcon className="w-6 h-6 text-sky-500" />
-        <h2 className="text-2xl md:text-3xl font-bold text-slate-800 dark:text-white">Let's get started</h2>
+        <h2 className="text-2xl md:text-3xl font-bold text-slate-800 dark:text-white">What needs fixing?</h2>
       </div>
       <p className="mb-8 text-slate-600 dark:text-slate-300">
         Select a service category to begin the AI-powered diagnosis.
@@ -31,6 +32,9 @@ const CategorySelector: React.FC<CategorySelectorProps> = ({ onCategorySelect })
             <p className="text-sm text-slate-500 dark:text-slate-400">{category.description}</p>
           </button>
         ))}
+      </div>
+       <div className="mt-8 text-center">
+        <button onClick={onBack} className="text-sm text-sky-600 dark:text-sky-400 hover:underline">&larr; Change Location</button>
       </div>
     </div>
   );
