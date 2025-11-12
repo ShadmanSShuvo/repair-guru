@@ -7,16 +7,18 @@ import JobTicket from './components/JobTicket';
 import LocationInput from './components/LocationInput';
 import { generateJobTicket } from './services/geminiService';
 import { TECHNICIANS } from './data/technicians';
+import { LanguageProvider, useLanguage } from './context/LanguageContext';
 
 type AppStep = 'LOCATION_INPUT' | 'CATEGORY_SELECTION' | 'PROBLEM_INPUT' | 'SHOWING_RESULT';
 
-const App: React.FC = () => {
+const MainApp: React.FC = () => {
   const [step, setStep] = useState<AppStep>('LOCATION_INPUT');
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
   const [jobAssignment, setJobAssignment] = useState<JobAssignment | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const { language, t } = useLanguage();
 
   const handleLocationSet = (location: UserLocation) => {
     setUserLocation(location);
@@ -47,12 +49,12 @@ const App: React.FC = () => {
     setJobAssignment(null);
 
     try {
-      const diagnosis: AiDiagnosis = await generateJobTicket(selectedCategory.name, description, image);
+      const diagnosis: AiDiagnosis = await generateJobTicket(selectedCategory.name, description, image, language);
       
       const suitableTechnicians = TECHNICIANS.filter(tech => tech.skillsets.includes(selectedCategory.name));
 
       if (suitableTechnicians.length === 0) {
-        setError(`Apologies, we couldn't find any ${selectedCategory.name} technicians in our network.`);
+        setError(t('error_no_technician', { category: t(selectedCategory.name.toLowerCase()) }));
         setIsLoading(false);
         return;
       }
@@ -94,11 +96,16 @@ const App: React.FC = () => {
       setStep('SHOWING_RESULT');
     } catch (e) {
       console.error(e);
-      setError('The AI failed to generate a diagnosis. Please try again with a more detailed description.');
+      if (e instanceof Error) {
+        // Use the key from the thrown error, with a fallback
+        setError(t(e.message) || t('error_api_generic'));
+      } else {
+        setError(t('error_api_generic'));
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [selectedCategory, userLocation]);
+  }, [selectedCategory, userLocation, language, t]);
 
   const handleStartOver = () => {
     setStep('LOCATION_INPUT');
@@ -145,10 +152,17 @@ const App: React.FC = () => {
         </div>
       </main>
        <footer className="text-center py-6 text-sm text-slate-500 dark:text-slate-400">
-        <p>Built by Team Overcaffeinated</p>
+        <p>{t('footer_built_by')}</p>
       </footer>
     </div>
   );
 };
+
+const App: React.FC = () => (
+  <LanguageProvider>
+    <MainApp />
+  </LanguageProvider>
+);
+
 
 export default App;

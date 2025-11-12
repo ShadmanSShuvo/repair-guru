@@ -1,6 +1,32 @@
-
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Category } from '../types';
+import { useLanguage } from '../context/LanguageContext';
+import MicrophoneIcon from './icons/MicrophoneIcon';
+import { GoogleGenAI, LiveServerMessage, Modality, Blob } from "@google/genai";
+
+// Helper functions for audio encoding
+function encode(bytes: Uint8Array) {
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function createBlob(data: Float32Array): Blob {
+  const l = data.length;
+  const int16 = new Int16Array(l);
+  for (let i = 0; i < l; i++) {
+    int16[i] = data[i] * 32768;
+  }
+  return {
+    data: encode(new Uint8Array(int16.buffer)),
+    mimeType: 'audio/pcm;rate=16000',
+  };
+}
+
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 interface ChatInterfaceProps {
   category: Category;
@@ -11,10 +37,132 @@ interface ChatInterfaceProps {
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ category, onDiagnose, isLoading, error, onBack }) => {
+  const { t, language } = useLanguage();
   const [description, setDescription] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recognitionError, setRecognitionError] = useState<string | null>(null);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Refs for audio processing and Live API session
+  const sessionRef = useRef<any | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const transcriptRef = useRef<string>('');
+
+  const cleanupAudio = useCallback(() => {
+    if (sessionRef.current) {
+      sessionRef.current.close();
+      sessionRef.current = null;
+    }
+    if (scriptProcessorRef.current) {
+      scriptProcessorRef.current.disconnect();
+      scriptProcessorRef.current = null;
+    }
+    if (mediaStreamSourceRef.current) {
+      mediaStreamSourceRef.current.disconnect();
+      mediaStreamSourceRef.current = null;
+    }
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    setIsRecording(false);
+    transcriptRef.current = '';
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      cleanupAudio();
+    };
+  }, [cleanupAudio]);
+
+  const startRecording = async () => {
+    setRecognitionError(null);
+    setIsRecording(true);
+    transcriptRef.current = '';
+
+    try {
+      mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Fix: Cast window to `any` to allow access to vendor-prefixed `webkitAudioContext`.
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      mediaStreamSourceRef.current = audioContextRef.current.createMediaStreamSource(mediaStreamRef.current);
+      scriptProcessorRef.current = audioContextRef.current.createScriptProcessor(4096, 1, 1);
+
+      const sessionPromise = ai.live.connect({
+        model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+        config: {
+          inputAudioTranscription: {},
+          responseModalities: [Modality.AUDIO],
+          systemInstruction: "You are a silent transcription assistant. Listen to the user and accurately transcribe their speech. Do not generate any spoken response.",
+        },
+        callbacks: {
+          onopen: () => {
+            if (scriptProcessorRef.current && mediaStreamSourceRef.current && audioContextRef.current) {
+              scriptProcessorRef.current.onaudioprocess = (audioProcessingEvent) => {
+                const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
+                const pcmBlob = createBlob(inputData);
+                sessionPromise.then((session) => {
+                  session.sendRealtimeInput({ media: pcmBlob });
+                });
+              };
+              mediaStreamSourceRef.current.connect(scriptProcessorRef.current);
+              scriptProcessorRef.current.connect(audioContextRef.current.destination);
+            }
+          },
+          onmessage: (message: LiveServerMessage) => {
+            if (message.serverContent?.inputTranscription) {
+              transcriptRef.current += message.serverContent.inputTranscription.text;
+            }
+            if (message.serverContent?.turnComplete) {
+              const fullTranscription = transcriptRef.current;
+              if (fullTranscription.trim()) {
+                setDescription(prev => (prev ? prev.trim() + ' ' : '') + fullTranscription.trim());
+              }
+              transcriptRef.current = '';
+            }
+          },
+          onerror: (e: ErrorEvent) => {
+            console.error('Live API Error:', e);
+            setRecognitionError(t('error_live_connection'));
+            cleanupAudio();
+          },
+          onclose: () => {
+            cleanupAudio();
+          },
+        },
+      });
+      sessionRef.current = await sessionPromise;
+    } catch (err) {
+      console.error("Failed to start recording:", err);
+      if (err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
+        setRecognitionError(t('error_live_mic_permission'));
+      } else {
+        setRecognitionError(t('error_live_generic'));
+      }
+      cleanupAudio();
+    }
+  };
+
+  const stopRecording = () => {
+    cleanupAudio();
+  };
+
+  const handleToggleRecording = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  };
 
   const handleImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -44,7 +192,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ category, onDiagnose, isL
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!description && !imageFile) {
-        alert("Please provide a description or upload an image.");
+        alert(t('error_no_input'));
         return;
     }
 
@@ -62,30 +210,45 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ category, onDiagnose, isL
     <div className="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-6 animate-fade-in-up">
        <div className="flex justify-between items-start mb-4">
         <div>
-            <h2 className="text-xl font-bold text-slate-800 dark:text-white">Diagnose Problem</h2>
-            <p className="text-slate-500 dark:text-slate-400">Category: <span className="font-semibold text-sky-500">{category.name}</span></p>
+            <h2 className="text-xl font-bold text-slate-800 dark:text-white">{t('diagnose_title')}</h2>
+            <p className="text-slate-500 dark:text-slate-400">{t('diagnose_category')}: <span className="font-semibold text-sky-500">{t(category.name.toLowerCase())}</span></p>
         </div>
-        <button onClick={onBack} className="text-sm text-sky-600 dark:text-sky-400 hover:underline">&larr; Change Category</button>
+        <button onClick={onBack} className="text-sm text-sky-600 dark:text-sky-400 hover:underline">&larr; {t('change_category')}</button>
       </div>
       
       <form onSubmit={handleSubmit}>
         <div className="mb-4">
-          <label htmlFor="description" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-            Describe the problem
-          </label>
+          <div className="flex justify-between items-center mb-1">
+            <label htmlFor="description" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+              {t('describe_problem_label')}
+            </label>
+            <button 
+              type="button" 
+              onClick={handleToggleRecording} 
+              className={`p-1 rounded-full transition-colors ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-slate-200 dark:bg-slate-600 hover:bg-slate-300'}`} 
+              aria-label={t('record_voice_label')}
+            >
+                <MicrophoneIcon className="w-5 h-5" />
+            </button>
+          </div>
           <textarea
             id="description"
             rows={4}
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => {
+              setDescription(e.target.value);
+              setRecognitionError(null);
+            }}
             className="w-full p-2 border border-slate-300 dark:border-slate-600 rounded-md bg-slate-50 dark:bg-slate-700 focus:ring-2 focus:ring-sky-500 focus:border-sky-500 transition"
-            placeholder={`e.g., "My AC is making a loud rattling noise."`}
+            placeholder={t('describe_problem_placeholder')}
           />
+          {isRecording && <p className="text-slate-500 text-sm mt-1 italic transition-opacity duration-300" aria-live="polite">{t('listening')}</p>}
+          {recognitionError && <p className="text-red-500 text-sm mt-1">{recognitionError}</p>}
         </div>
 
         <div className="mb-4">
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Upload a Photo (optional)
+                {t('upload_photo_label')}
             </label>
             <div 
                 onClick={triggerFileSelect} 
@@ -100,9 +263,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ category, onDiagnose, isL
                         </svg>
                     )}
                     <div className="flex text-sm text-slate-600 dark:text-slate-400">
-                        <p className="pl-1">{imageFile ? `Selected: ${imageFile.name}` : 'Click to upload or drag and drop'}</p>
+                        <p className="pl-1">{imageFile ? `${t('selected_file')} ${imageFile.name}` : t('upload_photo_text')}</p>
                     </div>
-                     <p className="text-xs text-slate-500 dark:text-slate-500">PNG, JPG, GIF up to 10MB</p>
+                     <p className="text-xs text-slate-500 dark:text-slate-500">{t('upload_photo_hint')}</p>
                 </div>
             </div>
             <input ref={fileInputRef} id="file-upload" name="file-upload" type="file" className="sr-only" onChange={handleImageChange} accept="image/*"/>
@@ -112,20 +275,23 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ category, onDiagnose, isL
 
         <button
           type="submit"
-          disabled={isLoading}
+          disabled={isLoading || isRecording}
           className="w-full flex justify-center items-center gap-2 bg-sky-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-2 dark:focus:ring-offset-slate-900 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors"
         >
           {isLoading ? (
             <>
-              <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
-              Diagnosing...
+              {t('diagnosing_btn')}
             </>
+          ) : isRecording ? (
+             t('stop_recording_btn')
           ) : (
-            'Generate AI Job Ticket'
-          )}
+             t('generate_ticket_btn')
+          )
+        }
         </button>
       </form>
     </div>

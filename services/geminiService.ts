@@ -46,17 +46,35 @@ const diagnosisSchema = {
   required: ["problemSummary", "likelyCause", "requiredParts", "estimatedLaborHours"],
 };
 
+const getApiErrorKey = (error: unknown): string => {
+    if (error instanceof Error) {
+        const message = error.message.toLowerCase();
+        if (message.includes('api key not valid')) return 'error_api_key_invalid';
+        if (message.includes('resource_exhausted') || message.includes('429')) return 'error_api_rate_limit';
+        if (message.includes('safety')) return 'error_api_safety_block';
+        if (message.includes('500') || message.includes('internal') || message.includes('unavailable')) return 'error_api_server_error';
+    }
+    return 'error_api_generic';
+};
+
 
 export const generateJobTicket = async (
   category: string,
   description: string,
-  image: { data: string; mimeType: string } | null
+  image: { data: string; mimeType: string } | null,
+  language: 'en' | 'bn'
 ): Promise<AiDiagnosis> => {
     
+  const languageInstruction = language === 'bn' 
+    ? "Please provide the entire JSON response, including all text fields like problemSummary, likelyCause, and part names, in the Bengali (Bangla) language."
+    : "Please provide the entire JSON response in English.";
+
   const prompt = `You are "Repair Guru", an expert AI diagnostic assistant for home and appliance repair. Your task is to analyze the user's problem description and/or image to create a detailed and precise job ticket for a service technician.
 
 The user has selected the category: "${category}".
 The user's description is: "${description}".
+
+${languageInstruction}
 
 Based on this information, diagnose the problem and generate a JSON object with the specified schema. This includes estimating the cost of required parts (in BDT) and the labor hours needed. Analyze any provided image for model numbers, signs of wear, leaks, cracks, or any other visual clues. Synthesize all information to provide the most accurate diagnosis possible. If the information is insufficient, make a reasonable and common assumption based on the category.`;
 
@@ -87,6 +105,7 @@ Based on this information, diagnose the problem and generate a JSON object with 
     return JSON.parse(jsonText);
   } catch (error) {
     console.error("Error calling Gemini API:", error);
-    throw new Error("Failed to get a valid response from the AI model.");
+    const errorKey = getApiErrorKey(error);
+    throw new Error(errorKey);
   }
 };
