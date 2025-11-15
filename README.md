@@ -1,5 +1,7 @@
 # Repair Guru 🛠️
 
+![Watch Video](landing.png)](https://www.youtube.com/watch?v=NR-uJ1V-9vg)
+
 Repair Guru is an AI-powered smart diagnostic tool that allows non-technical users to report complex service problems by uploading a photo or description. The AI analyzes the media to instantly create a precise job ticket for service providers.
 
 ## ✨ Features
